@@ -20,8 +20,6 @@ OrderCell() {
     this->state_chunkID=0;
     this->lcp = 0;
     this->charsInfo=0;
-    this->nextResolved = 0;
-    this->prevResolved=0;
 }
 
 //last 14 bits of state_chukID
@@ -101,34 +99,14 @@ void setState (char val) {
 }
 
 //complete skip bit - last bit of charInfo
-void setNextResolved (char val) {
-	//this->charsInfo = this->charsInfo | 1;
-    this->nextResolved = val;
-}
 
-bool isNextResolved (){
-	if ( this->nextResolved == 0)
-		return false;	
-	return true;
-}
-
-void setPreviousResolved (char val) {
-	//this->charsInfo = this->charsInfo | 1;
-    this->prevResolved = val;
-}
-
-bool isPreviousResolved (){
-	if ( this->prevResolved == 0)
-		return false;	
-	return true;
-}
 
 private:
 	unsigned short state_chunkID; // 2 bits for a state, 14 bits for chunk id
 	unsigned char charsInfo;//3 bits for a resolving char, 4 bits for a split, 1 bit is a total skip flag
 	unsigned char lcp; //up to 256 
-    char nextResolved;
-    char prevResolved;
+ //   char nextResolved;
+//    char prevResolved;
 const static unsigned short MAX_SHORT = ~0;
 const static unsigned char MAX_CHAR = ~0;
 const static unsigned short REMOVE_STATE_MASK =  MAX_SHORT >> 2;

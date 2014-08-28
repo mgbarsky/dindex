@@ -1,12 +1,20 @@
 #include "OrderStateReadWriteBuffer.h"
 
 using namespace std;
+void printVector (const std::vector<int64> &vec)
+{
+    int i=0;
+    for (;i<vec.size();i++)
+        printf("%ld ",(long)(vec[i]));
 
+    printf("\n");
+}
 OrderStateReadWriteBuffer::OrderStateReadWriteBuffer() 
 {
 	this->buffer = NULL;	
     this->inputFile = NULL;
     this->outputFile = NULL;
+    this->debug = false;
 }
 	
 OrderStateReadWriteBuffer::~OrderStateReadWriteBuffer()
@@ -16,7 +24,7 @@ OrderStateReadWriteBuffer::~OrderStateReadWriteBuffer()
 
 //memory allocation - occurs once per program
 bool OrderStateReadWriteBuffer::init( uint64 maxCapacity, unsigned char binID, 
-		const std::string &dbDir,  const std::string &tempDir)
+		const std::string &dbDir,  const std::string &tempDir, int64 totalElements)
 {
 	this->capacity = maxCapacity; 
 	this->binID = binID;
@@ -26,7 +34,11 @@ bool OrderStateReadWriteBuffer::init( uint64 maxCapacity, unsigned char binID,
 
    	this->buffer = new OrderCell[(size_t)this->capacity];
 
-    this->totalElementsInBin =0;
+    this->totalElementsInBin =totalElements;
+
+    //initialize input state counter
+    this->stateCounters[0].push_back (totalElements);
+
     this->currentElementInBin =0;
     if(!this->buffer)
     {
@@ -44,23 +56,51 @@ bool OrderStateReadWriteBuffer::init( uint64 maxCapacity, unsigned char binID,
 
 bool OrderStateReadWriteBuffer::reset()
 {
+    if (this->debug) {
+    printf("\n NEW ITERATION for bin %d------------------------\n",(int)binID);
+    printf("Input state vector for current iteration:\n");
+            printVector (this->stateCounters[this->currentInputSuffixID]);
+            printf("Output state vector for current iteration:\n");
+            printVector (this->stateCounters[this->currentOutputSuffixID]);
+    printf("------------------------\n");
+}
 	if(this->currentInputSuffixID == 1)
 	{
 		this->currentInputSuffixID=0;
+        this->currentOutputSuffixID = 1;
 		this->inputSuffix=".0";
 		this->outputSuffix=".1";
+        this->stateCounters[1].clear(); //prepare output vector for the next iteration
+
 	}
 	else
 	{
 		this->currentInputSuffixID=1;
+        this->currentOutputSuffixID = 0;
 		this->inputSuffix=".1";
 		this->outputSuffix=".0";
+        this->stateCounters[0].clear(); //prepare output vector for the next iteration
 	}
 
 	this->currPositionInBuffer=-1;
 	this->totalElementsInBuffer=0;
 	
     this->currentElementInBin =0;
+
+    //reset all interval variables to zero
+    this->inIntervalRtotal=0; 
+    this->inCurrentRpos=0;  
+
+    this->inIntervalURtotal=0; 
+    this->inCurrentURpos=0; 
+
+   // this->outCurrentRtotal=0; 
+   // this->outCurrentURtotal=0; 
+
+    this->currStateCounterIt = this->stateCounters[currentInputSuffixID].begin();
+
+    //currPosOutState=0;
+
 	//open input file and output file
     this->inputFileName = this->tempDir +separator()+ "orderarray"
 				+ T_to_string<short>(this->binID)+this->inputSuffix;
@@ -97,7 +137,30 @@ int OrderStateReadWriteBuffer::finishBuffer ()
 
     fclose (this->outputFile);
     this->outputFile = NULL;
+    
+    //copy the remaining entry from input state to output state - the only one which may happen is resolved tail
+    if (this->currStateCounterIt == this->stateCounters[currentInputSuffixID].end())
+         return RES_PROCESSED;
+    int64 lastInVal = *this->currStateCounterIt;
 
+    if (lastInVal >0)
+    {
+        displayWarning("OrderStateReadWriteBuffer - unprocessed values remain in input state vector.");
+		return RES_FAILURE;
+    }   
+    
+    //copy this value to the end of output state vector
+    size_t totalInOutput = this->stateCounters[this->currentOutputSuffixID].size();
+    int64 lastVal = this->stateCounters[this->currentOutputSuffixID][totalInOutput-1];
+    if (lastVal < 0 ) //add total remaining resolved to it
+    {
+        this->stateCounters[this->currentOutputSuffixID][totalInOutput-1]+=lastInVal;
+    }
+    else //last value in vector - unresolved interval
+    {
+        //start new resolved interval
+        this->stateCounters[this->currentOutputSuffixID].push_back(lastInVal);              
+    }
     return RES_PROCESSED;
 }
 
@@ -105,7 +168,33 @@ int OrderStateReadWriteBuffer::finishBuffer ()
 //it returns the result: 0 - failed, 1-success, 2-no more cells to update
 int OrderStateReadWriteBuffer::updateNextOrderCell (OrderCell *resolvingCell, OrderCell *resultingCell) 
 {
-	if(this->currPositionInBuffer ==-1 || 
+	if(this->currPositionInBuffer ==-1) {  //read first value from input state buffer
+        //check that not after end 
+        if (this->currStateCounterIt == this->stateCounters[currentInputSuffixID].end())
+        {
+            displayWarning("OrderStateReadWriteBuffer - invalid position in state interval vector.");
+		    return RES_FAILURE;
+        }
+        int64 val = *(this->currStateCounterIt);
+        if (val > 0 ) {  //unresolved interval
+            this->inIntervalRtotal=0; 
+            this->inCurrentRpos=0;  
+
+            this->inIntervalURtotal=val; 
+            this->inCurrentURpos=0; 
+        }
+        else {  //resolved interval
+            this->inIntervalRtotal= - val; 
+            this->inCurrentRpos=0;  
+
+            this->inIntervalURtotal=0; 
+            this->inCurrentURpos=0; 
+        } 
+        this->currStateCounterIt ++;       
+    }
+
+    
+    if(this->currPositionInBuffer ==-1 || 
 		this->currPositionInBuffer == this->totalElementsInBuffer)  //need to flush data and to refill new data
 	{	
 		int ret = this->flushRefillBuffer();
@@ -117,40 +206,128 @@ int OrderStateReadWriteBuffer::updateNextOrderCell (OrderCell *resolvingCell, Or
     bool prevCellAvailable = true;
     bool nextCellAvailable = true;
     bool lastInBin = false;
-    bool nextCellResolved = this->buffer[this->currPositionInBuffer].isNextResolved();
-    bool prevCellResolved = this->buffer[this->currPositionInBuffer].isPreviousResolved();
-    if (prevCellResolved) prevCellAvailable=false;
-
-    if (this->currPositionInBuffer == 0) //also there is no previous cell to look at
+    bool nextCellResolved = false;
+    bool prevCellResolved = false;
+    
+    if (this->currPositionInBuffer == 0) //there is no previous cell in buffer to look at
         prevCellAvailable = false;
 
-    
-	while(this->buffer[this->currPositionInBuffer].getState () == STATE_OUTPUT_RESOLVED) //continue increment counter - this copies prev value to the output buffer
+    if  (this->currentElementInBin == this->totalElementsInBin - 1) //last cell in the entire bin
+        lastInBin = true;
+
+    //now about the next cell
+    if (this->currPositionInBuffer == this->totalElementsInBuffer - 1) //last cell of this buffer
+        nextCellAvailable = false;   
+
+//skip resolved cells - will not be here in the final version
+    while(this->buffer[this->currPositionInBuffer].getState () == STATE_OUTPUT_RESOLVED) //continue increment counter - this copies prev value to the output buffer
 	{
+          this->inCurrentRpos++;
+        //check that state counters are correct 
+        if (  this->inIntervalRtotal == 0 ) { //we could not get here if current interval represents unresolved cells
+            printf("Input state vector for current iteration:\n");
+            printVector (this->stateCounters[this->currentInputSuffixID]);
+            printf("Output state vector for current iteration:\n");
+            printVector (this->stateCounters[this->currentOutputSuffixID]);
+
+            printf ("current pos in bin = %ld, current pos in buffer=%ld, curr position in interval = %ld\n",
+                (long)(this->currentElementInBin), (long)this->currPositionInBuffer, (long) this->inCurrentRpos);
+            displayWarning("OrderStateReadWriteBuffer - encountered resolved cell where unresolved has been expected.");
+		    return RES_FAILURE;
+        } 
+
+        //reached the end of the resolved interval
+        if (this->inCurrentRpos == this->inIntervalRtotal ) //switch state
+        { 
+            //record total resolved to the last position of the output state array
+            size_t totalInOutput = this->stateCounters[this->currentOutputSuffixID].size();
+            if (totalInOutput == 0)
+                this->stateCounters[this->currentOutputSuffixID].push_back(-this->inCurrentRpos); 
+            else
+            {
+                int64 lastVal = this->stateCounters[this->currentOutputSuffixID][totalInOutput-1];
+                if (lastVal < 0 ) //add total resolved to it
+                {
+                    this->stateCounters[this->currentOutputSuffixID][totalInOutput-1]-=this->inCurrentRpos;
+                }
+                else //last value in vector - unresolved interval
+                {
+                    //start new resolved interval
+                    this->stateCounters[this->currentOutputSuffixID].push_back(-this->inCurrentRpos);              
+                }
+            }
+            //get next value from input state, it should be positive
+            //check that not after end 
+            if (this->currStateCounterIt == this->stateCounters[currentInputSuffixID].end())
+            {
+                displayWarning("OrderStateReadWriteBuffer - invalid position in state interval vector.");
+		        return RES_FAILURE;
+            }
+            int64 val = *(this->currStateCounterIt);
+            if (val > 0 ) {  //unresolved interval
+                this->inIntervalRtotal=0; 
+                this->inCurrentRpos=0;  
+
+                this->inIntervalURtotal=val; 
+                this->inCurrentURpos=0; 
+            }
+            else {  //resolved interval, comes after resolved interval - error
+                displayWarning("OrderStateReadWriteBuffer - resolved comes after resolved in state interval vector.");
+		        return RES_FAILURE;
+            } 
+            
+            this->currStateCounterIt ++; 
+           
+        }
 		this->currPositionInBuffer++;
         this->currentElementInBin++;
+       
 		if(	this->currPositionInBuffer == this->totalElementsInBuffer)  //need to flush data and to reset
 		{	
 			int ret = this->flushRefillBuffer();
 			if (ret!=RES_SUCCESS)
 				return ret;
 		}       
+       
 	}
 
-   
-    //now about the next cell
-    if (this->currPositionInBuffer == this->totalElementsInBuffer - 1) //last cell of this buffer
-        nextCellAvailable = false;   
-    
-    if  (this->currentElementInBin == this->totalElementsInBin - 1) //last cell in the entire bin
-        lastInBin = true;
+    //check that resolved count corresponds to the actual cells skipped
+    if ( this->inIntervalRtotal > 0) //incorrect state
+    {
+         displayWarning("OrderStateReadWriteBuffer - reached incorrect state (resolved) during next cell update.");
+		 return RES_FAILURE;
+    }
+
+    if (this->inIntervalURtotal == 0) //incorrect state
+    {
+         displayWarning("OrderStateReadWriteBuffer - reached incorrect state (resolved) during next cell update.");
+		 return RES_FAILURE;
+    }
+
     //we now are staying on the current cell which is not yet fully STATE_OUTPUT_RESOLVED
+
+    //if this is the first cell of the current unresolved interval - there is no previous cell available
+    if (this->inCurrentURpos == 0)
+    {
+        prevCellResolved = true;
+        prevCellAvailable=false; //there may be prev cell in buffer but this would not be the correct cell
+    }
+
+    //if this is the last cell of the current unresolved interval - there is no next cell, and the cell is not required to be carried to the next iteration if it is resolved for the prev
+    if (this->inCurrentURpos == this->inIntervalURtotal -1)
+    {
+        nextCellResolved = true;
+        nextCellAvailable = false; 
+    }
+
     
+//***********************
+//START UPDATING CURRENT CELL
+//*********************
+
     //the only things that can change are chunkID and we need to carry on resolving char - we update these
 	this->buffer[this->currPositionInBuffer].setResolvingChar (resolvingCell->getResolvingChar());
     this->buffer[this->currPositionInBuffer].setChunkID (resolvingCell->getChunkID());
-
-    
    
 
     //its previous state can be STATE_RESOLVED_RIGHT_LEFT
@@ -241,22 +418,69 @@ int OrderStateReadWriteBuffer::updateNextOrderCell (OrderCell *resolvingCell, Or
 				this->buffer[this->currPositionInBuffer-1].setState (STATE_RESOLVED_RIGHT_LEFT);				
 			}
 		}
-	}	
-	
-    //set state of the previous cell - if current cell is totally resolved - it would not be visible in the next iteration
-    if (this->buffer[this->currPositionInBuffer].getState () == STATE_OUTPUT_RESOLVED && prevCellAvailable)
-        this->buffer[this->currPositionInBuffer-1].setNextResolved(1);
+	}  
+    //depending on the state of the resultingcell - update count in output state counters
+    size_t totalInOutput = this->stateCounters[this->currentOutputSuffixID].size();
+    int currentCellState = this->buffer[this->currPositionInBuffer].getState() ;
+    if (totalInOutput == 0)
+    {
+        if (currentCellState== STATE_OUTPUT_RESOLVED)
+            this->stateCounters[this->currentOutputSuffixID].push_back (-1);
+        else
+            this->stateCounters[this->currentOutputSuffixID].push_back(1);
+    }
+    else //look at the last element
+    {
+        int64 lastVal = this->stateCounters[this->currentOutputSuffixID][totalInOutput-1];
+        if (lastVal < 0 ) //last value in vector - resolved interval
+        {
+            if (currentCellState== STATE_OUTPUT_RESOLVED) //increment count of resolved cells
+                this->stateCounters[this->currentOutputSuffixID][totalInOutput-1]--;
+            else //start new unresolved interval
+                this->stateCounters[this->currentOutputSuffixID].push_back(1);
+        }
+        else //last value in vector - unresolved interval
+        {
+            if (currentCellState== STATE_OUTPUT_RESOLVED) //start new resolved interval
+               this->stateCounters[this->currentOutputSuffixID].push_back(-1); 
+            else //increment count of unresolved cells
+               this->stateCounters[this->currentOutputSuffixID][totalInOutput-1]++;                 
+        }
+    }    
+   
+    *resultingCell=this->buffer[this->currPositionInBuffer];
 
-    //set state of the current cell based on value of a previous cell - previous cell will not be seen in the next iteration
-    if (prevCellAvailable && this->buffer[this->currPositionInBuffer-1].getState() == STATE_OUTPUT_RESOLVED)
-        this->buffer[this->currPositionInBuffer].setPreviousResolved(1);
-
-	*resultingCell=this->buffer[this->currPositionInBuffer];
 	this->currPositionInBuffer++;
     this->currentElementInBin++;
 
+    this->inCurrentURpos++;
+
+//check if this is the time to switch state from unresolved to resolved
+    if (this->inCurrentURpos == this->inIntervalURtotal) //next interval should be of resolved - negative value
+    {
+        if (this->currStateCounterIt == this->stateCounters[currentInputSuffixID].end()) //no more values in the input vector
+        {
+            return RES_SUCCESS;
+        }
+        int64 val = *(this->currStateCounterIt);
+        if (val > 0 ) {  //unresolved interval again - error
+            displayWarning("OrderStateReadWriteBuffer - next interval is resolved - after resolved.");
+		    return RES_FAILURE;
+        }
+        else {  //resolved interval
+            this->inIntervalRtotal= - val; 
+            this->inCurrentRpos=0;  
+
+            this->inIntervalURtotal=0; 
+            this->inCurrentURpos=0; 
+        } 
+        this->currStateCounterIt ++;     
+    }
+
 	return RES_SUCCESS;
 }
+
+
 
 int OrderStateReadWriteBuffer::flushCopyBuffer()
 {
@@ -412,11 +636,11 @@ int OrderStateReadWriteBuffer::flushRefillBuffer()
 		this->currPositionInBuffer = posInBuffer;
 
         //here update prev element state if needed
-        if(posInBuffer == 1)
-        {
-            if ( this->buffer [0].getState () == STATE_RESOLVED_LEFT && this->buffer [1].getState () >= STATE_RESOLVED_LEFT)
-                this->buffer [0].setState(STATE_RESOLVED_RIGHT_LEFT);
-        }
+       // if(posInBuffer == 1)
+      //  {
+      //      if ( this->buffer [0].getState () == STATE_RESOLVED_LEFT && this->buffer [1].getState () >= STATE_RESOLVED_LEFT)
+      //          this->buffer [0].setState(STATE_RESOLVED_RIGHT_LEFT);
+       // }
 	}
 	else
 	{

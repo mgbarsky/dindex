@@ -105,9 +105,9 @@ bool MergeManager::init(IndexConfig *cfg, InputReader *reader, short totalChunks
 	for(short i=0;i<this->totalBins;i++)
 	{
 		if(!this->outputOrderBins[i].init( (memPerBuffer / sizeof(OrderCell)),  (unsigned char) i, 
-		    this->dataDir, this->tempDir))
+		    this->dataDir, this->tempDir, this->lfTable[i] ))
 			return false;
-        this->outputOrderBins[i].setTotalElementsInBin(this->lfTable[i]);
+        //this->outputOrderBins[i].setTotalElementsInBin(this->lfTable[i]);
         printf("Total in bin %d = %ld\n",i,(long)this->lfTable[i]);
 	}
    
