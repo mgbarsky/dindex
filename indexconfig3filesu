@@ -1,0 +1,13 @@
+chunkMaxCharacters = 200000000 # number of input characters per chunk - 200 mb -
+maxChunks = 32000 # max number of chunks - to fit into short
+metaDataDir =../input/sa_test3files/db #location of supplementary tables
+tempDir = ../input/sa_test3files/temp #location of disk-data to be deleted
+bwtTempDir0 = ../input/sa_test3files/bwttemp0
+bwtTempDir1 = ../input/sa_test3files/bwttemp1
+mappingFileName = mapChunkToSample.csv mapping from chunk id to sample key
+fofilenames = ../input/sa_test3files/input/dnafiles.txt #file with names of input files
+fokeys = ../input/sa_test3files/input/dnakeys.txt # file with names of the samples
+bwtFileExt = .bwt # suffix of BWT output file
+saFileExt = .sa #suffix of suffix array output file
+chunkFileExt = .chunk #suffix of each chunk output file
+totalMemForMergeBuffers = 500000000 #1000000000 - default 1 GB

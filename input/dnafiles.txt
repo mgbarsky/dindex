@@ -1,0 +1,2 @@
+./input/dnaread1.txt
+./input/dnaread2.txt

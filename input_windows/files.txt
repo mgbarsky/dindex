@@ -1,0 +1,2 @@
+C:\DINDE\input\read1.txt
+C:\DINDE\input\read2.txt
