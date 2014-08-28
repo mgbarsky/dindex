@@ -40,10 +40,12 @@ bool MergeManager::init(IndexConfig *cfg, InputReader *reader, short totalChunks
 
     
     //calculate max memory per each buffer
-    //we need totalChunks + totalBins +2 buffers
-    uint64 memPerBuffer = totalMemForMergeBuffers /(this->totalChunks + this->totalBins + 2);
+    //we need totalChunks + totalBins +1 buffer for input - TBD add for vectors ?? what about using inputorder as no buffer - buffered by system
+    uint64 memPerBuffer = totalMemForMergeBuffers /(this->totalChunks + this->totalBins + 1);
     
-	//init BWT buffers from temp directory - each chunk has some number of associated files
+	//init BWT buffers from db directory - originally, each chunk has it own bwt in db directory
+    //the bwtBuffer BWTStateBuffer will read corresponding chunk, count total counts for each letter
+    //and write BWT itself to tempDir - to serve as an input for iteration 1
 	for(short i=0;i<this->totalChunks;i++)
 	{
 		//computes totals per each character in bwt files for each chunk and initializes temp dir
@@ -51,7 +53,7 @@ bool MergeManager::init(IndexConfig *cfg, InputReader *reader, short totalChunks
 			return false;
 	}		
 
-	//now we need to write the initial files for OrderState input
+	//now we need to write the initial files for first iteration input and output
 
 	//first we are counting total occurrences of each letter of alphabet
 	//then, from these counts we initialize our order bins and write them to files
@@ -67,13 +69,18 @@ bool MergeManager::init(IndexConfig *cfg, InputReader *reader, short totalChunks
 		}
 	}
 
+    //init inOrder manager
+    if (!this->inOrder.init(memPerBuffer, this->tempDir))
+        return false;
 	OrderStateOutputBuffer outputBuffer;
-
-	if(!outputBuffer.init((memPerBuffer / sizeof(OrderCell)), this->totalBins, this->tempDir, ".0"))
+    
+	if(!outputBuffer.init((memPerBuffer / sizeof(OrderCell)), this->totalBins, this->tempDir))
 		return false;
 
 	//distribute bwt characters from each chunk to corresponding bins
-	this->totalProcessed=0;
+    //at the same time, write inOrdercells for the first iteration
+	this->totalToProcess=0;
+    
 	for(short currentBinID=0; currentBinID < this->totalBins; currentBinID++)
 	{
 		outputBuffer.initBin(currentBinID);
@@ -83,31 +90,32 @@ bool MergeManager::init(IndexConfig *cfg, InputReader *reader, short totalChunks
 			uint64 letterCount = this->bwtBuffers[currentChunkID].getLetterBinContribution(currentBinID);
 			for ( uint64 m=0; m < letterCount; m++)
 			{
-				this->totalProcessed++;
+				this->totalToProcess++;
 				if(!outputBuffer.initNextCell(currentChunkID))
 					return false;
+                
+                if (!inOrder.setNextInOrderCell(currentChunkID,(char) currentBinID))
+                    return false;
 			}
 		}
 		
 		//finished corresponding bin - close file 
-		if(!outputBuffer.finishCurrentBin())
+		if(!outputBuffer.wrapUpCurrentBin())
 			return false;		
 	}
-
-	//one input order buffer: memory allocation
-	if(!this->inputOrderBuffer.init( (memPerBuffer / sizeof(OrderCell)), this->totalBins,
-		this->dataDir, this->tempDir)) //one input buffer for all char bins
-		return false;
+    //finished inOrder - wrapUp
+    if (!inOrder.wrapUp())
+        return false;	
 
 	//totalBins output order buffers - memory allocation
-	this->outputOrderBins.resize(this->totalBins);
+	this->outputOrderBins.resize (this->totalBins);
 
 	for(short i=0;i<this->totalBins;i++)
 	{
-		if(!this->outputOrderBins[i].init( (memPerBuffer / sizeof(OrderCell)),  (unsigned char) i, 
-		    this->dataDir, this->tempDir, this->lfTable[i] ))
+		if(!this->outputOrderBins[i].init( memPerBuffer,  (unsigned char) i, 
+		     this->tempDir, this->lfTable[i] ))
 			return false;
-        //this->outputOrderBins[i].setTotalElementsInBin(this->lfTable[i]);
+        
         printf("Total in bin %d = %ld\n",i,(long)this->lfTable[i]);
 	}
    
@@ -115,131 +123,208 @@ bool MergeManager::init(IndexConfig *cfg, InputReader *reader, short totalChunks
 	return true;
 }
 
-
-bool MergeManager::mergeChunks()
-{	
-	//return true;
+bool MergeManager::mergeChunks() {
 
     short iteration = 1;
 
-	this->totalResolved=0;
-     printf("Total to process %ld\n",(long)this->totalProcessed);
-	while (this->totalResolved < this->totalProcessed)
-	{		
-        //reset input buffer
-	    if(!this->inputOrderBuffer.reset())
-		    return false;
-        
-	    //reset output read-write buffers
-	    for (short i=0; i<this->totalBins; i++)
-	    {
-		    if (!this->isBinEmpty(i))
-		    {
-			    if (!this->outputOrderBins[i].reset())
-				    return false;
-                
-		    }
-	    }
+	while (this->totalToProcess > 0)	{        
+  
+        //*************************
+        // Next iteration
+        //********************************
+        if (!this->nextIteration ( iteration))
+            return false;
 
-	    //reset BWT buffers 
-	    for(short i=0;i<this->totalChunks;i++)
-	    {
-		    if( ! this->bwtBuffers[i].reset())
-			    return false;
-            
-	    }
-
-        if (!this->resolveLCP(iteration))
-			return false;
-        
-		iteration++;		
+        //***************
+        // Next bifurcation: Here where input and output resoved are distributed between input and output for the next iteration
+        //*****************
+        if (!this->nextBifurcation())
+            return false; 
+        		
+		iteration++;
+       // if (iteration == 99)
+        //    exit (0);
+        long remains  = (long)this->totalToProcess;
+	    printf("After iteration %d - remains %ld entries to resolve\n", iteration, remains);		
 	}
     
+    //close files with final results
+    for (short i=0; i<this->totalBins; i++)   {	    
+	   this->outputOrderBins[i].wrapUp();
+    }  
 	return true;
 }
 
+//one iteration
+bool MergeManager::nextIteration(short iteration)
+{
+    //reset BWT buffers for current iteration
+    for(short i=0;i<this->totalChunks;i++)    {
+	    if( ! this->bwtBuffers[i].nextIterationReset())
+		    return false;
+    }
 
-//main logic of one iteration
+    //reset output bins for current iteration
+    for (short i=0; i<this->totalBins; i++)   {	    
+		if (!this->outputOrderBins[i].nextIterationReset())
+			return false;
+        this->outputOrderBins[i].setTotalElementsInBin(this->lfTable[i]);  
+    }
+
+    //reset inOrder for current iteration
+    if(!this->inOrder.nextIterationReset())
+	    return false;
+
+//************main action
+    if (!this->resolveLCP(iteration))
+		return false;
+//************************
+
+    //wrap up bwt chunks after current iteration - flush what remains in each buffer - full flush
+    for(short i=0;i<this->totalChunks;i++)    {
+	    if(!this->bwtBuffers[i].flush() )
+		    return false;
+    }
+
+    //wrap up output bins after current iteration - flush and close file pointers
+    for (short i=0; i<this->totalBins; i++)   {	    
+	   if(!this->outputOrderBins[i].wrapUpIteration() )
+	        return false;	   
+    }  
+
+    return true;      	   	    
+}
+
+//here the results of the previous iteration get distributed between:
+//1. working input order array (input for next iteration - if not resolved for input, which is marked as first bit of bwt
+//2. working output order arrays
+//
+//also bwts get cut off all cells resolved for input
+bool MergeManager::nextBifurcation() {
+    
+    //reset buffers for new processing
+    //reset BWT managers for current bifurcation
+    for(short i=0;i<this->totalChunks;i++)    {
+	    if( ! this->bwtBuffers[i].nextBifurcationReset())
+		    return false;
+    }
+
+    //reset output bins for current iteration
+    for (short i=0; i<this->totalBins; i++)   {	    
+	    if (!this->outputOrderBins[i].nextBifurcationReset())
+		    return false;  
+    }
+
+    //reset inOrder for current iteration
+    if(!this->inOrder.nextBifurcationReset())
+	    return false;
+
+    //reset lftable counts for each bin, now we are going to count how much remains (unresolved for output)
+    this->totalToProcess = 0;
+    for(short j=0; j<this->totalBins; j++)
+		this->lfTable[j] = 0;
+
+    //read all output bins in turn, 
+    //look at the corresponding BWT entry - according to a new order after the last iteration -
+    //and depending what you see, distribute out cell: to new output buffer, to new input buffer, to truncated bwts, and (TBD) to final output
+    OrderCell outCell;
+    for (short i=0; i<this->totalBins; i++) {
+        
+        int readingResult = this->outputOrderBins[i].getNextCell ( &outCell);
+        if ( readingResult == RES_FAILURE ) return false;
+
+        while (readingResult != RES_PROCESSED) {
+            //look at current outCell
+            short chunkID = outCell.getChunkID();
+            
+            char bwtChar =0;
+            int bwtReadingResult = (this->bwtBuffers[chunkID]).getNextCell(&bwtChar);
+
+            if (bwtReadingResult != RES_SUCCESS) {
+                displayWarning ("MergeManager::nextBifurcation Logical error - failed to access BWT entry.");
+                return false;
+            }
+           
+            if (bwtChar > 0) {//not resolved for input - write this entry into inOrder  
+                if ( !this->inOrder.setNextInOrderCell (outCell.getChunkID(), outCell.getResolvingChar () ) )
+                    return false;
+                
+                this->totalToProcess ++;
+	        }
+
+            //if out cell not resolved for output - write it into outOrderBin - that is performed automatically by the buffer - due to filter function           
+            char outState = outCell.getState();
+            if (outState != STATE_OUTPUT_RESOLVED)
+                this->lfTable [i] ++;
+            //BWT chars will be skipped authomatically by buffer - due to filter function
+            readingResult = this->outputOrderBins[i].getNextCell ( &outCell);
+            if ( readingResult == RES_FAILURE ) return false;
+        }
+        //finished writing new outCells for current bin - wrap it up
+        if(!this->outputOrderBins[i].wrapUpBifurcation() )
+	        return false;
+    }
+	   
+    //finished writing new in cells - wrap it up
+    if(!this->inOrder.wrapUp() )
+        return false;
+
+    //also flush what remains unresolved in bwtBuffers buffers
+    for(short i=0;i<this->totalChunks;i++)    {
+	    if(!this->bwtBuffers[i].flushUnresolved() )
+		    return false;
+    }
+
+    return true;
+}
+
+
 bool MergeManager::resolveLCP(short iteration)
 {
-	OrderCell resolvingCell;
+	InOrderCell inOrderCell;	
 	
-	this->totalResolved=0;
-	int nextBWTSuccessfullyRetrieved = RES_SUCCESS;
+	int nextBWTSuccess = RES_SUCCESS;  //success of advancing pointer in bwt buffer
 
     //read next entry of input order array (from prev iteration)
-	while(this->inputOrderBuffer.getNextOrderCell(&resolvingCell) == RES_SUCCESS )
-	{
-		short chunkID = resolvingCell.getChunkID();  
+    int readingResult = this->inOrder.getNextInOrderCell (&inOrderCell);
+    if (readingResult == RES_FAILURE)
+        return false;
+	while ( readingResult != RES_PROCESSED ) {
+		short chunkID = inOrderCell.getChunkID();  
 
-		nextBWTSuccessfullyRetrieved = this->bwtBuffers[chunkID].next(); 
-		if (nextBWTSuccessfullyRetrieved != RES_SUCCESS)
-		{
-			displayWarning("MergeManager: iteration "+T_to_string<short>(iteration) + " of merge failed: logical error - try to access bwt char from chunk when all have been processed");
+		nextBWTSuccess = this->bwtBuffers[chunkID].next(); 
+		if (nextBWTSuccess != RES_SUCCESS) {
+			displayWarning("MergeOrderManager: iteration "+T_to_string<short>(iteration) + " of merge failed: logical error - try to access bwt char from chunk when all have been processed");
 			return false;
 		}
 
 		//get a BWT char from a corresponding BWT buffer
-		char bwtChar = this->bwtBuffers[chunkID].getCurrentElement();		
-		
-		//if BWT cell is resolved for input - skip this cell as input
-        if (bwtChar < 0) //skip
-        {
-            this->totalResolved++;
-        }
-        else
-		{
-			short binID = this->reader->getBinID(bwtChar);
-			if (binID < 0 || binID >= this->totalBins)	
-			{
-				displayWarning("MergeManager: iteration "+T_to_string<short>(iteration) + " of merge failed: logical error - invalid bin ID");
-				return false;
-			}
-
-			OrderCell resultingCell;
-			int updateResult = this->outputOrderBins[binID].updateNextOrderCell(&resolvingCell, &resultingCell);
-			if(updateResult == RES_SUCCESS)
-			{
-				if(resultingCell.getState() == STATE_OUTPUT_RESOLVED)
-					this->bwtBuffers[chunkID].setCurrentElementProcessed();				
-			}
-			else if(updateResult == RES_PROCESSED) //logical error - all entries in this bin are processed
-			{
-				displayWarning("MergeManager: iteration "+T_to_string<short>(iteration) + " of merge failed: logical error - tried to update order cell where all files have been processed");
-					return false;
-			}
-			else //error
-				return false;
-		}
-			
-	}
-
-	//finished all bins - flush what remains in each output buffer bin	
-	for(short i=0; i<this->totalBins; i++)
-	{
-		if(!this->isBinEmpty(i))
-		{
-			if(this->outputOrderBins[i].finishBuffer () != RES_PROCESSED)
-				return false;
-		}
-	}
-
-	//finished all chunk BWTs - flush what remains in each BWT bin
-	for(short i=0;i<this->totalChunks;i++)
-	{
-		if( ! this->bwtBuffers[i].flushWriteOnly())
+		char bwtChar = (this->bwtBuffers[chunkID]).getCurrentCell();			
+		short binID = this->reader->getBinID (bwtChar);
+		if (binID < 0 || binID >= this->totalBins)		{
+			displayWarning("MergeOrderManager: iteration "+T_to_string<short>(iteration) + " of merge failed: logical error - invalid bin ID");
 			return false;
-	}
+		}
 
-	long resolved = (long)this->totalResolved;
-	long processed = (long)this->totalProcessed;
-	printf("After iteration %d - %ld entries out of total %ld are resolved\n", iteration, resolved, processed);
+		char finalState;
+		int updateResult = this->outputOrderBins[binID].updateNextOrderCell (&inOrderCell, &finalState);
+		if(updateResult == RES_SUCCESS)	{           
+			if(finalState == STATE_OUTPUT_RESOLVED)  {
+				bwtChar = - bwtChar;	//set bit to processed	
+                this->bwtBuffers [chunkID].setCurrentCell (bwtChar);
+            }
+		}
+		else if(updateResult == RES_PROCESSED) {//logical error - all entries in this bin are processed		
+			displayWarning("MergeOrderManager: iteration "+T_to_string<short>(iteration) + " of merge failed: logical error - tried to update order cell where all files have been processed");
+				return false;
+		}
+		else //some unexpected error
+			return false;
+        readingResult = this->inOrder.getNextInOrderCell (&inOrderCell);
+        if (readingResult == RES_FAILURE)
+            return false;
+	}
+	
 	return true;
 }
 
-bool MergeManager::isBinEmpty(short binID)
-{
-	if(this->lfTable[binID]==0)
-		return true;
-	return false;
-}

@@ -15,55 +15,50 @@ BWTStateBuffer::BWTStateBuffer()
 //destructor
 BWTStateBuffer::~BWTStateBuffer()
 {
-    delete [] this->buffer;
-    delete [] this->lfTable;
+    if (this->buffer != NULL) delete [] this->buffer;
+    if (this->lfTable != NULL) delete [] this->lfTable;
 }
 
 //initializes memory 
 //counts total different characters in BWT file
 //writes temp copy into temp dir
-bool BWTStateBuffer::init( uint64 maxBufferCapacity, InputReader *reader,
+bool BWTStateBuffer::init( uint64 maxBufferCapacityBytes, InputReader *reader,
                 short chunkID, std::string const &dbDir, std::string const &tempDir,  std::string const &bwtFileExt)
 {
-	//initialize values	
-	this->dbDir = dbDir;
-	this->tempDir = tempDir;
-	this->bwtFileExt=bwtFileExt;
+	//initialize values
+    this->chunkID=chunkID;
+    string originalFileName = dbDir	 + separator() + T_to_string<short>(this->chunkID)+bwtFileExt;
 
-	this->chunkID=chunkID;
+    //set file names
+    this->fileName0 = tempDir + separator() + T_to_string<short>(this->chunkID)+bwtFileExt +".0"; 
+    this->fileName1 = tempDir + separator() + T_to_string<short>(this->chunkID)+bwtFileExt +".1"; 
+
 	this->totalLetterBins = reader->getAlphabetSize()+1;
 
-	//allocate buffer to read the file - align to 4 bytes
-	this->capacity = maxBufferCapacity;
+	//allocate buffer to read the file 
+	this->capacity = maxBufferCapacityBytes/sizeof(char);
 	this->buffer = new char[(size_t)this->capacity];
 
 	//allocate LF table
 	this->lfTable = new uint64[this->totalLetterBins];
 	for(unsigned short i=0; i<this->totalLetterBins; i++)
-		this->lfTable[i]=0;
-
-	this->currentInputSuffixID=1;
-	this->inputSuffix=".1";
-	this->outputSuffix=".0";  //we are going to write BWT into temp dir, with suffix .0 to prepare for the first iteration
+		this->lfTable[i]=0;	
 
 	//read entire chunk file into buffer and count occurrences of each character
-	//also write BWT file into temp dir, with suffix .0 to prepare for the first iteration
-	this->inputFileName=this->dbDir + separator() + T_to_string<short>(this->chunkID)+this->bwtFileExt;		
-	this->inputFile=fopen((this->inputFileName).c_str(),"rb");
+	//also write BWT file into temp dir, with suffix .0 to prepare for the first iteration		
+	this->inputFile=fopen(originalFileName.c_str(),"rb");
 
 	if( ! this->inputFile)	{
-		displayWarning ("BWTStateBuffer init: File " + this->inputFileName + " not found.");
+		displayWarning ("BWTStateBuffer init: File " + originalFileName + " not found.");
 		return false;
 	}
 
-	this->outputFileName=this->tempDir + separator() + T_to_string<short>(this->chunkID)+this->bwtFileExt+this->outputSuffix;		
-	this->outputFile=fopen((this->outputFileName).c_str(),"wb");
+	this->outputFile=fopen((this->fileName0).c_str(),"wb");
 
 	if( ! this->outputFile)	{
-		displayWarning ("BWTStateBuffer init: Cannot write to file " + this->outputFileName + ".");
+		displayWarning ("BWTStateBuffer init: Cannot write to file " + this->fileName0 + ".");
 		return false;
 	}
-
 	
 	bool done_reading = false;
 	while(!done_reading)
@@ -78,11 +73,11 @@ bool BWTStateBuffer::init( uint64 maxBufferCapacity, InputReader *reader,
 				this->lfTable[binID]++;
 			}	
 
-			//write into temp file
+			//write into temp file for first iteration
 			size_t written =  fwrite(this->buffer,sizeof(char),read,this->outputFile);
 			if (written != read)
 			{
-				displayWarning("BWTStateBuffer init: error writing to file " + this->outputFileName + ": not all has been written.");
+				displayWarning("BWTStateBuffer init: error writing to file " + this->fileName0 + ": not all has been written.");
 				return false;
 			}
 
@@ -101,73 +96,104 @@ bool BWTStateBuffer::init( uint64 maxBufferCapacity, InputReader *reader,
 	fclose(this->outputFile);
 	this->outputFile=NULL;
 	
-	//set initial values	
+	//reset buffer to the beginning
     this->currPositionInFile=0;
-	this->curPositionInBuffer=-1; //buffer is empty yet for our purposes
-	this->totalElementsInBuffer=0;
+	this->currPositionInBuffer=-1; //buffer is empty yet for our purposes
+	this->totalElementsRead=0;
 	
 	return true;
 }
 
-uint64 BWTStateBuffer::getLetterBinContribution(unsigned short binID)
-{
+uint64 BWTStateBuffer::getLetterBinContribution(unsigned short binID) {
 	return this->lfTable[binID];
 }
 
-bool BWTStateBuffer::reset()  //this resets all the variables to the beginning and switches the input and output
+bool BWTStateBuffer::nextIterationReset()  //this resets all the variables to the beginning and switches the input to 0 and output to 1
 {
-    if(this->currentInputSuffixID == 0)
-	{
-		this->currentInputSuffixID=1;
-		this->inputSuffix=".1";
-		this->outputSuffix=".0";
-	}
-	else
-	{
-		this->currentInputSuffixID=0;		
-		this->inputSuffix=".0";
-		this->outputSuffix=".1";
-	}
+    this->mode = ITERATION_STATE_UPDATE_MODE;
+    
+//set file 0 for input, file 1 for output
+    this->inputFile=fopen((this->fileName0).c_str(),"rb");
 
-    //connstruct input and output file names
-    this->inputFileName=this->tempDir + separator() + T_to_string<short>(this->chunkID)+this->bwtFileExt+this->inputSuffix;
-    this->outputFileName=this->tempDir + separator() + T_to_string<short>(this->chunkID)+this->bwtFileExt+this->outputSuffix;
-	
-    //touch current output file to delete previous data
-    this->outputFile=fopen(this->outputFileName.c_str(),"wb"); //clears previous file content
-
-    if ( !this->outputFile )   {
-        displayWarning("BWTStateBuffer reset: cannot write to file " + this->outputFileName + ".");
+	if( ! this->inputFile)	{
+		displayWarning ("BWTStateBuffer nextIterationReset: File " +this->fileName0 + " not found.");
 		return false;
-    }
+	}
+
+    fclose (this->inputFile);
+    this->inputFile = NULL;
+
+	this->outputFile=fopen(( this->fileName1).c_str(),"wb");
+
+	if( ! this->outputFile)	{
+		displayWarning ("BWTStateBuffer nextIterationReset: Cannot write to file " +  this->fileName1 + ".");
+		return false;
+	}
 
     fclose (this->outputFile);
     this->outputFile = NULL;
 
-    //set initial values
+    //reset buffer to the beginning
     this->currPositionInFile = 0;
-	this->curPositionInBuffer = -1; //empty buffer flag
-	this->totalElementsInBuffer = 0;
+	this->currPositionInBuffer = -1; //empty buffer flag
+	this->totalElementsRead = 0;
 	
 	return true;
 }
 
-//advances to the next BWT element of the input
+bool BWTStateBuffer::nextBifurcationReset()  //this resets all the variables to the beginning and switches the input to 1 and output to 0
+{
+    this->mode = BIFURCATION_FILTER_MODE;
+
+    //set file 1 for input, file 0 for output 
+    this->inputFile=fopen((this->fileName1).c_str(),"rb");
+
+	if( ! this->inputFile)	{
+		displayWarning ("BWTStateBuffer nextBifurcationReset: File " + this->fileName1 + " not found.");
+		return false;
+	}
+
+    fclose (this->inputFile);
+    this->inputFile = NULL;
+
+	this->outputFile=fopen(( this->fileName0).c_str(),"wb");
+
+	if( ! this->outputFile)	{
+		displayWarning ("BWTStateBuffer nextBifurcationReset: Cannot write to file " +  this->fileName0 + ".");
+		return false;
+	}
+
+    fclose (this->outputFile);
+    this->outputFile = NULL;
+
+    //reset buffer to the beginning
+    this->currPositionInFile = 0;
+	this->currPositionInBuffer = -1; //empty buffer flag
+	this->totalElementsRead = 0;
+	
+	return true;
+}
+
+//advances to the next BWT element of the input during iteration - the buffer is always read from somewhere
 int BWTStateBuffer::next()
 {
-	if (this->curPositionInBuffer == -1) //first-time buffer refill
+	if (this->currPositionInBuffer == -1 ) //first-time buffer refill
 	{
-		return this->refillReadOnly();
+		return (this->refill());
 		//in case of success - pointing to the first element in the newly re-filled buffer
 	}
 
 	//advance position in current buffer
-    this->curPositionInBuffer++;
+    this->currPositionInBuffer++;
 
-    //check that this is the last element of the buffer
-    if (this->curPositionInBuffer == this->totalElementsInBuffer) //we finished processing elements of this buffer - need refill
+    //check that this is not the last element of the buffer
+    if (this->currPositionInBuffer == this->totalElementsRead) //we finished processing elements of this buffer - need refill
 	{
-		return (this->flushRefill());
+		if (!this->flush ())
+            return RES_FAILURE;
+        int ret = this->refill();
+        if (ret != RES_SUCCESS)
+            return ret;	        
         //in case of success - pointing to the first element in the newly re-filled buffer
         //in case no more entries returns RES_PROCESSED
 	}
@@ -175,128 +201,139 @@ int BWTStateBuffer::next()
 	return RES_SUCCESS;
 }
 
-void BWTStateBuffer::setCurrentElementProcessed()  //sets to 1 first bit of the corresponding BWT char
-{
-	if(this->buffer[this->curPositionInBuffer]<0)
-        return;
-    this->buffer[this->curPositionInBuffer] = -this->buffer[this->curPositionInBuffer];
+//during iteration we need to get current cell of chunk BWT in order to know which bin to resolve, and to later update its state
+//need to call next() before accessing current cell
+char BWTStateBuffer::getCurrentCell() {
+	return (this->buffer[this->currPositionInBuffer]);
 }
 
-char BWTStateBuffer::getCurrentElement()
-{
-	return (this->buffer[this->curPositionInBuffer]);
+//during iteration we need to update state of the same cell - so we stay on it
+void BWTStateBuffer::setCurrentCell(char newCell) { 	
+    this->buffer[this->currPositionInBuffer] = newCell;
+}
+
+//during bifurcation we just look at the state of each next cell in some order
+//and then only unresolved chars from the same buffer are written to an output file 
+int BWTStateBuffer::getNextCell(char *resultCell) {
+    int ret = RES_SUCCESS;
+
+    if (this->currPositionInBuffer == -1 ) //first-time buffer refill
+	{
+        ret = this->refill();
+        if (ret != RES_SUCCESS)
+            return ret;		
+		//in case of success - pointing to the first element in the newly re-filled buffer
+	}
+    
+
+    if (this->currPositionInBuffer == this->totalElementsRead) //we finished processing elements of this buffer - need refill
+	{
+        if (!this->flushUnresolved ())
+            return RES_FAILURE;
+        ret = this->refill();
+        if (ret != RES_SUCCESS)
+            return ret;	
+    }
+
+    *resultCell = this->buffer[this->currPositionInBuffer];
+
+    this->currPositionInBuffer++;
+
+    return RES_SUCCESS;	
+    
 }
 
 //private:
 //this is called only first time after reset
-int BWTStateBuffer::refillReadOnly()
-{
+int BWTStateBuffer::refill() {
+    int res = RES_SUCCESS;
+
     //fill buffer for the corresponding chunk file
 	this->inputFile=fopen((this->inputFileName).c_str(),"rb");
-	if(!this->inputFile)
-	{
-		displayWarning("BWTStateBuffer - first-time refill: File "+this->inputFileName+" not found.");
+	if(!this->inputFile)	{
+		displayWarning("BWTStateBuffer -refill failed: File "+this->inputFileName+" not found.");
 		return RES_FAILURE;
 	}	
 
-	size_t read = fread(this->buffer, sizeof(char),(size_t)this->capacity,this->inputFile);
-	if(read>0)
-	{
-		this->totalElementsInBuffer = read;
-		this->curPositionInBuffer = 0;
-        this->currPositionInFile += read; 
-	}
-	else //file is empty
-	{		
-		displayWarning("BWTStateBuffer - first-time refill: File "+this->inputFileName+" is probably empty.");
-		return RES_FAILURE;
-	}
+    //move file pointer to the corresponding position within the file
+    int ret=fseeklarge ( this->inputFile , this->currPositionInFile , SEEK_SET);
+	if (ret!=0)    {
+		res = RES_FAILURE;
+    }
+    else    {
+	    size_t read = fread(this->buffer, sizeof(char), (size_t)this->capacity, this->inputFile);
+	    if(read>0)	{
+		    this->totalElementsRead = read;
+		    this->currPositionInBuffer = 0;
+            this->currPositionInFile += read; 
+	    }
+	    else {	//no more elements in file	    	   
+		    res = RES_PROCESSED;
+	    }
+    }
 	fclose (this->inputFile);
 	this->inputFile = NULL;
 
-	return RES_SUCCESS;
+	return res;
 }
 
-//this is a public method called at the end to flush what remains in buffer
-bool BWTStateBuffer::flushWriteOnly() //tbd - check maybe it is not needed
-{
-	if(this->totalElementsInBuffer > 0 )
-	{
-		//open file for appending
-		this->outputFile=fopen(this->outputFileName.c_str(),"ab"); //appends to the end of already existing file
-
-		if ( !this->outputFile )
-		{
-			displayWarning("BWTStateBuffer flushWriteOnly writing of output failed: cannot append to output file "+this->outputFileName);
-			return false;
-		}
+//this is called to flush what is in the buffer
+///in iteration - we flush updated values as is - output is in file 1
+bool BWTStateBuffer::flush() 
+{    
+    if (this->totalElementsRead == 0) //nothing to write
+        return true;
 	
-		size_t written =  fwrite(this->buffer,sizeof(char),(size_t)(this->totalElementsInBuffer),this->outputFile);
-		if (written != (size_t)this->totalElementsInBuffer)
-		{
-			displayWarning("BWTStateBuffer writing of output failed: not all "+T_to_string<uint64>( this->totalElementsInBuffer) +" elements were not written to output file "+this->outputFileName);
-			return false;
-		}
-		fclose(this->outputFile);	
-		this->outputFile=NULL;		
-	}
+    //open output file for appending
+	this->outputFile=fopen((this->fileName1).c_str(),"ab"); //appends to the end of already existing file
+
+	if ( !this->outputFile )		{
+		displayWarning("BWTStateBuffer flush failed: cannot append to output file "+this->fileName1);
+		return false;
+	}	
+
+    size_t written =  fwrite(this->buffer,sizeof(char),(size_t)(this->totalElementsRead),this->outputFile);
+    if (written != (size_t)this->totalElementsRead)		{
+	    displayWarning("BWTStateBuffer writing of output failed: not all "+T_to_string<uint64>( this->totalElementsRead) +" elements were not written to output file "+this->fileName1);
+	    return false;
+    }   
+
+	fclose(this->outputFile);	
+	this->outputFile = NULL;		
+	
 	return true;
 }
 
-//middle process operation of refilling buffer and writing updated buffer to the output file
-int  BWTStateBuffer::flushRefill()
+//this is called during bifurcation - so the output is in file0
+bool BWTStateBuffer::flushUnresolved () 
 {
-	//first - flash what is in buffer to current output file 
-	if(this->totalElementsInBuffer>0 )
-	{
-		//open file for appending
-		this->outputFile = fopen (this->outputFileName.c_str(),"ab"); 
-
-		if ( ! this->outputFile )
-		{
-			displayWarning ("BWTStateBuffer flush-refill writing of output failed: cannot write to output file "+this->outputFileName);
-			return 0;
-		}
+     if (this->totalElementsRead == 0) //nothing to write
+        return true;
 	
-		size_t written =  fwrite (this->buffer,sizeof(char),(size_t)(this->totalElementsInBuffer),this->outputFile);
-		if(written !=(size_t)this->totalElementsInBuffer)
-		{
-			displayWarning("OrderBuffer appending of output failed: not all "+T_to_string<uint64>( this->totalElementsInBuffer) +" elements were not written to output file "+this->outputFileName);
-			return 0;
-		}
-		fclose(this->outputFile);	
-		this->outputFile=NULL;		
-	}
+    //open output file for appending
+	this->outputFile=fopen((this->fileName0).c_str(),"ab"); //appends to the end of already existing file
 
-	//try to fill the buffer
-	this->inputFile=fopen((this->inputFileName).c_str(),"rb");
-	if(!this->inputFile)
-	{
-		displayWarning("BWTStateBuffer - flash-refill: File "+this->inputFileName+" not found.");
-		return RES_FAILURE;
+	if ( !this->outputFile )		{
+		displayWarning("BWTStateBuffer flushUnresolved failed: cannot append to output file "+this->fileName0);
+		return false;
 	}	
 
-    int ret=fseeklarge ( this->inputFile , this->currPositionInFile , SEEK_SET);
-	if (ret!=0)
-		return RES_FAILURE;
-
-	//read from the corresponding file position
-	size_t read = fread(this->buffer, sizeof(char),(size_t)this->capacity,this->inputFile);
-	if(read>0)
-	{
-		this->totalElementsInBuffer = read;
-		this->curPositionInBuffer = 0;
-		this->currPositionInFile += read;
-	}
-	else //finished file
-	{
-        fclose (this->inputFile);
-	    this->inputFile = NULL;
-		return RES_PROCESSED;
-	}
+    //write only chars which do not have first bit set - to indicate they are not needed for further processing
+    int64 i=0;
+    for (; i< this->totalElementsRead; i++)
+    {
+        if (this->buffer[i] > 0)
+        {
+            if ((fwrite(&this->buffer[i],sizeof(char),1,this->outputFile))!=1) {
+                displayWarning("BWTStateBuffer flushUnresolved failed: could not write unresolved element to output file "+this->fileName0);
+	            return false;
+            }
+        }
+    }
+   
+	fclose(this->outputFile);	
+	this->outputFile = NULL;		
 	
-    fclose (this->inputFile);
-	this->inputFile = NULL;
-    return RES_SUCCESS;
+	return true;
 }
 

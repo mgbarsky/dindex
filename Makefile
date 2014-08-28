@@ -11,7 +11,7 @@ LDFLAGS=-lz
 MATHFLAG=-lm
 
 # Source files
-INDEX_CREATE_SRC=divsufsort.c Utils.cpp Alphabet.cpp DNAAlphabet.cpp InputReader.cpp DNAReader.cpp DNALineReader.cpp IndexConfig.cpp ChunkIndexer.cpp BWTStateBuffer.cpp OrderCell.cpp OrderStateInputBuffer.cpp OrderStateOutputBuffer.cpp OrderStateReadWriteBuffer.cpp MergeManager.cpp IndexManager.cpp buildSA.cpp
+INDEX_CREATE_SRC=divsufsort.c Utils.cpp Alphabet.cpp DNAAlphabet.cpp InputReader.cpp DNAReader.cpp DNALineReader.cpp IndexConfig.cpp ChunkIndexer.cpp BWTStateBuffer.cpp OrderCell.cpp OrderStateInputBuffer.cpp OrderStateOutputBuffer.cpp OrderStateReadWriteBuffer.cpp InOrderManager.cpp MergeManager.cpp IndexManager.cpp buildSA.cpp
 
 # Binaries
 all: indexfull 

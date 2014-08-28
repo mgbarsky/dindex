@@ -15,11 +15,11 @@ public:
 	OrderStateOutputBuffer(const OrderStateOutputBuffer& a) {}
     ~OrderStateOutputBuffer();
 
-	bool init(uint64 maxCapacity, short totalBins, const std::string &tempDir, const std::string &outputFileSuffix); //memory allocation
+	bool init(uint64 maxCapacity, short totalBins, const std::string &tempDir); //memory allocation
 
 	bool initBin (short binID);
 
-    bool finishCurrentBin();
+    bool wrapUpCurrentBin();
 
 	bool initNextCell(short chunkID);
 
@@ -29,12 +29,10 @@ private:
 	OrderCell *buffer;
 	
 	std::string tempDir;
-	std::string outputFileSuffix;
-	std::string outputFilePrefix;
 
 	short currentBinID;
 	short totalBins;
-	std::string outputFileName;
+	std::string fileName;
 	FILE *file;
 
 	uint64 currPositionInBuffer;
@@ -42,7 +40,7 @@ private:
 	uint64 capacity;
 	bool firstInBin;
 
-    bool flushBuffer();
+    bool flush();
 };
 
 #endif

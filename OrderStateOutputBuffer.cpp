@@ -13,19 +13,19 @@ OrderStateOutputBuffer::~OrderStateOutputBuffer()
 	delete [] this->buffer;
 }
 
-bool OrderStateOutputBuffer::init(uint64 maxCapacity, short totalBins, const std::string &tempDir, const std::string &outputFileSuffix)
+bool OrderStateOutputBuffer::init(uint64 maxCapacity, short totalBins, const std::string &tempDir)
 {
 	this->capacity=maxCapacity;
 
 	this->totalBins=totalBins;
 
-	this->tempDir = tempDir;
-
-	this->outputFileSuffix = outputFileSuffix;
+	this->tempDir = tempDir;	
 
 	//allocate buffer
 	this->buffer =  new OrderCell[(size_t)this->capacity];
 	
+    if (!this->buffer)
+        return false;
   	return true;
 }
 
@@ -33,15 +33,13 @@ bool OrderStateOutputBuffer::initBin (short binID)
 {
 	this->currentBinID=binID;
     this->firstInBin = true;
+	
+    this->fileName = this->tempDir +separator()+ "orderarray"
+		+ T_to_string<short>(this->currentBinID)+".0"; //suffix is .0 - because this buffer is only used during initialization
 
-	this->outputFilePrefix = this->tempDir +separator()+ "orderarray"
-		+ T_to_string<short>(this->currentBinID); //to this only add file ID and the output suffix
-
-    this->outputFileName = this->outputFilePrefix + this->outputFileSuffix;
-
-    this->file = fopen (this->outputFileName.c_str(),"wb");
+    this->file = fopen (this->fileName.c_str(),"wb");
     if ( !this->file) {
-        displayWarning("OrderStateOutputBuffer initBin failed: cannot write to output file "+this->outputFileName);
+        displayWarning("OrderStateOutputBuffer initBin failed: cannot write to output file "+this->fileName);
 		return false;
     }
 
@@ -51,11 +49,11 @@ bool OrderStateOutputBuffer::initBin (short binID)
 	return true;
 }
 
-bool OrderStateOutputBuffer::finishCurrentBin()
+bool OrderStateOutputBuffer::wrapUpCurrentBin()
 {
     if (this->currPositionInBuffer > 0)
     {
-        if ( !this->flushBuffer () )
+        if ( !this->flush () )
             return false;
     }
 
@@ -69,7 +67,7 @@ bool OrderStateOutputBuffer::initNextCell(short chunkID)
 {
 	if(this->currPositionInBuffer == this->capacity)
 	{
-		if(!this->flushBuffer())
+		if(!this->flush())
 			return false;
 	}
 
@@ -110,7 +108,7 @@ bool OrderStateOutputBuffer::initNextCell(short chunkID)
 	return true;
 }
 
-bool OrderStateOutputBuffer::flushBuffer()
+bool OrderStateOutputBuffer::flush()
 {
 	if(this->currPositionInBuffer == 0)
 		return true;
