@@ -74,7 +74,7 @@ bool MergeManager::init(IndexConfig *cfg, InputReader *reader, short totalChunks
         return false;
 	OrderStateOutputBuffer outputBuffer;
     
-	if(!outputBuffer.init((memPerBuffer / sizeof(OrderCell)), this->totalBins, this->tempDir))
+	if(!outputBuffer.init(memPerBuffer , this->totalBins, this->tempDir))
 		return false;
 
 	//distribute bwt characters from each chunk to corresponding bins
@@ -142,8 +142,7 @@ bool MergeManager::mergeChunks() {
             return false; 
         		
 		iteration++;
-       // if (iteration == 99)
-        //    exit (0);
+       
         long remains  = (long)this->totalToProcess;
 	    printf("After iteration %d - remains %ld entries to resolve\n", iteration, remains);		
 	}
@@ -158,6 +157,8 @@ bool MergeManager::mergeChunks() {
 //one iteration
 bool MergeManager::nextIteration(short iteration)
 {
+	if (iteration == 14)
+           int debug =0;
     //reset BWT buffers for current iteration
     for(short i=0;i<this->totalChunks;i++)    {
 	    if( ! this->bwtBuffers[i].nextIterationReset())
@@ -221,6 +222,7 @@ bool MergeManager::nextBifurcation() {
 
     //reset lftable counts for each bin, now we are going to count how much remains (unresolved for output)
     this->totalToProcess = 0;
+	uint64 outputUnResolvedTotal= 0;
     for(short j=0; j<this->totalBins; j++)
 		this->lfTable[j] = 0;
 
@@ -247,7 +249,10 @@ bool MergeManager::nextBifurcation() {
            
             if (bwtChar > 0) {//not resolved for input - write this entry into inOrder  
                 if ( !this->inOrder.setNextInOrderCell (outCell.getChunkID(), outCell.getResolvingChar () ) )
+				{
                     return false;
+					
+				}
                 
                 this->totalToProcess ++;
 	        }
@@ -255,11 +260,16 @@ bool MergeManager::nextBifurcation() {
             //if out cell not resolved for output - write it into outOrderBin - that is performed automatically by the buffer - due to filter function           
             char outState = outCell.getState();
             if (outState != STATE_OUTPUT_RESOLVED)
+			{
                 this->lfTable [i] ++;
+				outputUnResolvedTotal++;
+			}
             //BWT chars will be skipped authomatically by buffer - due to filter function
             readingResult = this->outputOrderBins[i].getNextCell ( &outCell);
             if ( readingResult == RES_FAILURE ) return false;
         }
+
+		
         //finished writing new outCells for current bin - wrap it up
         if(!this->outputOrderBins[i].wrapUpBifurcation() )
 	        return false;
@@ -274,13 +284,19 @@ bool MergeManager::nextBifurcation() {
 	    if(!this->bwtBuffers[i].flushUnresolved() )
 		    return false;
     }
-
+	if (this->totalToProcess != outputUnResolvedTotal)
+		{
+			displayWarning ("The total of remaining output "+ T_to_string<uint64>(this->totalToProcess) 
+				+" does not correspond to the total of remaining input "+ T_to_string<uint64>(outputUnResolvedTotal) );
+			return false;
+		}
     return true;
 }
 
 
 bool MergeManager::resolveLCP(short iteration)
 {
+	uint64 counter=0;
 	InOrderCell inOrderCell;	
 	
 	int nextBWTSuccess = RES_SUCCESS;  //success of advancing pointer in bwt buffer
@@ -306,7 +322,7 @@ bool MergeManager::resolveLCP(short iteration)
 			return false;
 		}
 
-		char finalState;
+		char finalState;	
 		int updateResult = this->outputOrderBins[binID].updateNextOrderCell (&inOrderCell, &finalState);
 		if(updateResult == RES_SUCCESS)	{           
 			if(finalState == STATE_OUTPUT_RESOLVED)  {
@@ -323,6 +339,7 @@ bool MergeManager::resolveLCP(short iteration)
         readingResult = this->inOrder.getNextInOrderCell (&inOrderCell);
         if (readingResult == RES_FAILURE)
             return false;
+		counter++;
 	}
 	
 	return true;

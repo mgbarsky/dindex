@@ -94,7 +94,7 @@ int InOrderManager::refill () {
 }
 
 bool InOrderManager::flush () {
-    uint64 totalToWrite = this->currPositionInBuffer;
+    int64 totalToWrite = this->currPositionInBuffer;
 
     if (totalToWrite <=0) //nothing to write - buffer is empty
         return true;   
@@ -106,19 +106,20 @@ bool InOrderManager::flush () {
 		return false;
 	}	
 
+	this->currPositionInBuffer =0;
 	return true;
 }
 
 bool InOrderManager::wrapUp () { //depends on mode
     if (this->mode == INORDER_WRITE_MODE ) {//need to flush remaining in the buffer    
         if (!this->flush())
-            return RES_FAILURE;
+            return false;
     }
  
     //close file
     fclose (this->file);
     this->file = NULL;
-    return RES_SUCCESS;
+    return true;
 }
 
 //resets input file pointer for the next iteration

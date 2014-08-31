@@ -1,5 +1,5 @@
 #include "IndexManager.h"
-#include "ChunkIndexer.h"
+//#include "ChunkIndexer.h"
 #include "DNALineReader.h"
 #include "MergeManager.h"
 
@@ -26,6 +26,7 @@ bool IndexManager::buildIndex()
 	
 	//int longestLine = (int) chunkIndexer.getLongestInputLine();
 	//printf("Longest input line is of size %d\n",longestLine);
+	//if(!mergeManager.init(this->config,&reader,chunkIndexer.getTotalChunks()))
 	if(!mergeManager.init(this->config,&reader,3))
 		return false;
 

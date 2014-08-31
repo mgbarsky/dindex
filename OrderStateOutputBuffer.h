@@ -15,7 +15,7 @@ public:
 	OrderStateOutputBuffer(const OrderStateOutputBuffer& a) {}
     ~OrderStateOutputBuffer();
 
-	bool init(uint64 maxCapacity, short totalBins, const std::string &tempDir); //memory allocation
+	bool init( uint64 maxMemBytes, short totalBins, const std::string &tempDir); //memory allocation
 
 	bool initBin (short binID);
 

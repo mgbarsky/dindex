@@ -13,9 +13,9 @@ OrderStateOutputBuffer::~OrderStateOutputBuffer()
 	delete [] this->buffer;
 }
 
-bool OrderStateOutputBuffer::init(uint64 maxCapacity, short totalBins, const std::string &tempDir)
+bool OrderStateOutputBuffer::init(uint64 maxMemBytes, short totalBins, const std::string &tempDir)
 {
-	this->capacity=maxCapacity;
+	this->capacity=maxMemBytes/ sizeof(OrderCell);
 
 	this->totalBins=totalBins;
 

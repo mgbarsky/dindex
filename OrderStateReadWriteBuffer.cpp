@@ -1,7 +1,12 @@
 #include "OrderStateReadWriteBuffer.h"
 
 using namespace std;
-
+void printStateVector ( std::vector<int64> &vec)
+{
+	for (int64 i=0; i< vec.size(); i++)
+		printf (" %ld ", (long)vec[i]);
+	printf("\n");
+}
 //constructor
 OrderStateReadWriteBuffer::OrderStateReadWriteBuffer() 
 {
@@ -89,7 +94,7 @@ bool OrderStateReadWriteBuffer::nextIterationReset() //reads from file 0, writes
     //set pointer to the output file
     this->outputFile = fopen (this->fileName1.c_str(),"wb");	
 
-	if(!this->inputFile)
+	if(!this->outputFile)
 	{
 		displayWarning("OrderStateReadWriteBuffer - nextIterationReset failed: cannot write to File "+this->fileName1+".");
 		return false;
@@ -134,7 +139,20 @@ bool OrderStateReadWriteBuffer::nextIterationReset() //reads from file 0, writes
 
 bool OrderStateReadWriteBuffer::wrapUpIteration ()
 {
-    if (!this->flush())
+	printf ("Input in buffer %d:\n", this->binID);
+    printStateVector (this->stateCounters[this->currentInputSuffixID]);
+	printf ("Outputin buffer %d:\n", this->binID);
+	printStateVector (this->stateCounters[this->currentOutputSuffixID]);
+    
+    if (this->totalElementsInBin == 0)
+	{
+		if (this->currStateCounterIt == this->stateCounters[currentInputSuffixID].end())
+			return true;
+		int64 lastInVal = *this->currStateCounterIt;
+		this->stateCounters[this->currentOutputSuffixID].push_back(lastInVal);
+		return true;
+	}
+	if (!this->flush())
         return false;   
 
     fclose (this->inputFile);
@@ -166,6 +184,8 @@ bool OrderStateReadWriteBuffer::wrapUpIteration ()
         //start new resolved interval
         this->stateCounters[this->currentOutputSuffixID].push_back(lastInVal);              
     }
+
+
     return true;
 }
 
@@ -246,10 +266,9 @@ int OrderStateReadWriteBuffer::getNextCell (OrderCell *resultingCell)
             return ret;
         //if success - then current position in buffer is on 0
     }
-
-    this->currPositionInBuffer ++;
+	*resultingCell = this->buffer[this->currPositionInBuffer];
+    this->currPositionInBuffer ++;    
     
-    *resultingCell = this->buffer[this->currPositionInBuffer];
     return ret;
 }
 
@@ -272,7 +291,7 @@ int OrderStateReadWriteBuffer::refill()  //refills next chunk of the input file
 //here it writes to outputFile only values which are not resolved after latest iteration
 bool OrderStateReadWriteBuffer::flushBifurcation() 
 {
-    if (this->totalElementsInBuffer == 0)
+	if (this->totalElementsInBuffer == 0)
         return true;   
 
     int64 i=0;
@@ -288,7 +307,8 @@ bool OrderStateReadWriteBuffer::flushBifurcation()
             }
         }
     }
-
+	this->currPositionInBuffer = -1;
+	this->totalElementsInBuffer = 0;
     return true;       
 }
 
@@ -413,9 +433,9 @@ int OrderStateReadWriteBuffer::updateNextOrderCell (InOrderCell *resolvingCell, 
             
             this->inIntervalURtotal=val; 
             this->inCurrentURpos=0; 
-            this->currStateCounterIt ++;  
+            //this->currStateCounterIt ++;  
         } 
-        this->currStateCounterIt ++;     
+         this->currStateCounterIt ++;    
     }
 
     if(	this->currPositionInBuffer == this->totalElementsInBuffer)  //need to flush data and to refill new data

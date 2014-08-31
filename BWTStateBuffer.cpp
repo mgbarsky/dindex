@@ -113,6 +113,8 @@ bool BWTStateBuffer::nextIterationReset()  //this resets all the variables to th
     this->mode = ITERATION_STATE_UPDATE_MODE;
     
 //set file 0 for input, file 1 for output
+	this->inputFileName = this->fileName0;
+	this->outputFilename = this->fileName1;
     this->inputFile=fopen((this->fileName0).c_str(),"rb");
 
 	if( ! this->inputFile)	{
@@ -146,6 +148,8 @@ bool BWTStateBuffer::nextBifurcationReset()  //this resets all the variables to 
     this->mode = BIFURCATION_FILTER_MODE;
 
     //set file 1 for input, file 0 for output 
+	this->inputFileName = this->fileName1;
+	this->outputFilename = this->fileName0;
     this->inputFile=fopen((this->fileName1).c_str(),"rb");
 
 	if( ! this->inputFile)	{
